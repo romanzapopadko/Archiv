@@ -15,30 +15,14 @@ builder.Configuration.AddJsonFile("ocelot.json", false, true);
 builder.Configuration.AddEnvironmentVariables();
 
 // --- 2. Настройка Аутентификации ---
-/*
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options => {
         options.Authority = builder.Configuration["Auth:Authority"];
-        options.Audience = "http://localhost/";
+        options.Audience = "kense-gateway";
         if (builder.Environment.IsDevelopment())
         {
             options.RequireHttpsMetadata = false;
         }
-    });
-*/
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options => {
-        options.Authority = builder.Configuration["Auth:Authority"];
-        options.Audience = "http://localhost/"; // Из вашего JWT
-        options.RequireHttpsMetadata = false;
-
-        options.TokenValidationParameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidIssuer = "http://localhost:5000/", // Строго как в поле 'iss' токена
-            ValidateAudience = true,
-            ValidateLifetime = true
-        };
     });
 
 // --- 3. Настройка Авторизации (Меняем 'default' на 'GatewayAuth') ---
@@ -101,8 +85,10 @@ if (app.Environment.IsDevelopment())
         options.SwaggerEndpoint("/Calendar/swagger/v1/swagger.json", "CalendarService API - v1");
         options.SwaggerEndpoint("/ReferenceInfo/swagger/v1/swagger.json", "ReferenceInfo API - v1");
         options.SwaggerEndpoint("/CalendarBroker/swagger/v1/swagger.json", "CalendarBroker API - v1");
-
-        options.SwaggerEndpoint("/ExportExcel/swagger/v1/swagger.json", "ExportExcel");
+        options.SwaggerEndpoint("/AiChat/swagger/v1/swagger.json", "AiChatHandler API - v1");
+        options.SwaggerEndpoint("/Notifications/swagger/v1/swagger.json", "Notifications API - v1");
+        options.SwaggerEndpoint("/ExportExcel/swagger/v1/swagger.json", "ExportExcel API - v1");
+        options.SwaggerEndpoint("/AiHelper/swagger/v1/swagger.json", "AiHelper Kenes API - v1");
     });
 }
 
