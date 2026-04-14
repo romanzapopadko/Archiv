@@ -1,10 +1,16 @@
-using Gateway.Middleware;
 using Gateway;
+using Gateway.Infrastructure.Resilience;
+using Gateway.Middleware;
+using Gateway.Models;
+using Gateway.Options;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
 using Ocelot.DependencyInjection;
 using Ocelot.Middleware;
-using Yarp.ReverseProxy;
 using Ocelot.Requester;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
+using System.Security.Cryptography;
+using Yarp.ReverseProxy;
+using Yarp.ReverseProxy.Forwarder;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -14,18 +20,43 @@ builder.Configuration.AddJsonFile("appsettings.json", false, true);
 builder.Configuration.AddJsonFile("ocelot.json", false, true);
 builder.Configuration.AddEnvironmentVariables();
 
-// --- 2. Настройка Аутентификации ---
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options => {
-        options.Authority = builder.Configuration["Auth:Authority"];
-        options.Audience = "kense-gateway";
-        if (builder.Environment.IsDevelopment())
-        {
-            options.RequireHttpsMetadata = false;
-        }
-    });
 
-// --- 3. Настройка Авторизации (Меняем 'default' на 'GatewayAuth') ---
+// --- 2. Настройка Аутентификации (RSA JWT) ---
+var jwtSettingsConfiguration = builder.Configuration.GetSection("JwtSettings");
+builder.Services.Configure<JwtSettings>(jwtSettingsConfiguration);
+var jwtSettings = jwtSettingsConfiguration.Get<JwtSettings>();
+
+if (jwtSettings?.AccessTokenSettings?.PublicKey != null)
+{
+    var rsa = RSA.Create();
+    rsa.ImportRSAPublicKey(
+        source: Convert.FromBase64String(jwtSettings.AccessTokenSettings.PublicKey),
+        bytesRead: out int _);
+    var key = new RsaSecurityKey(rsa);
+
+    builder.Services.AddAuthentication(cfg =>
+    {
+        cfg.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+        cfg.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+        cfg.DefaultScheme = JwtBearerDefaults.AuthenticationScheme;
+    }).AddJwtBearer(x =>
+    {
+        x.RequireHttpsMetadata = false;
+        x.SaveToken = false;
+        x.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = key,
+            ValidateIssuer = false, // Как в вашем примере
+            ValidIssuer = jwtSettings.AccessTokenSettings.Issuer,
+            ValidateAudience = false, // Как в вашем примере
+            ValidAudience = jwtSettings.AccessTokenSettings.Audience,
+            ValidateLifetime = true
+        };
+    });
+}
+
+// --- 3. Настройка Авторизации ---
 builder.Services.AddAuthorization(options => {
     options.AddPolicy("GatewayAuth", p => {
         p.AddAuthenticationSchemes(JwtBearerDefaults.AuthenticationScheme);
@@ -42,6 +73,7 @@ builder.Services.AddAuthorization(options => {
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.Configure<PolicySettings>(builder.Configuration.GetSection("PolicySettings"));
+builder.Services.Configure<ResilienceOptions>(builder.Configuration.GetSection("Gateway:Resilience"));
 builder.Services.AddCors();
 builder.Services.AddControllers();
 
@@ -50,8 +82,15 @@ var useYarp = builder.Configuration.GetValue<bool>("Gateway:UseYarp", false);
 
 if (useYarp)
 {
+    // Регистрируем именованный HttpClient с вашей логикой устойчивости (Retry, Jitter и т.д.)
+    builder.Services.AddHttpClient("YarpClient")
+        .AddKenseResilience(builder.Configuration);
+
     builder.Services.AddReverseProxy()
-        .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"));
+        .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"))
+        .AddTransforms<RouteRetryTransformProvider>()
+        // Привязываем YARP к нашему устойчивому HttpClient
+        .ConfigureHttpClient((context, handler) => { });
 
 }
 else
@@ -96,6 +135,7 @@ app.UseCors(b => b.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader());
 
 // Middleware (Логирование отключаем для k6)
 app.UseMiddleware<GatewayLoggingMiddleware>();
+app.UseMiddleware<YarpForwardingMiddleware>();
 
 app.UseHttpsRedirection();
 app.UseWebSockets();
