@@ -4,22 +4,25 @@ using Gateway.Middleware;
 using Gateway.Models;
 using Gateway.Options;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
-using Ocelot.DependencyInjection;
-using Ocelot.Middleware;
-using Ocelot.Requester;
+using Polly;
+using System.Diagnostics;
+using System.Net;
 using System.Security.Cryptography;
 using Yarp.ReverseProxy;
 using Yarp.ReverseProxy.Forwarder;
+using Yarp.ReverseProxy.Model;
+using Yarp.ReverseProxy.Transforms;
+using Yarp.ReverseProxy.Transforms.Builder;
+
 
 var builder = WebApplication.CreateBuilder(args);
 
 // --- 1. Конфигурация (сначала файлы) ---
 builder.Configuration.SetBasePath(Directory.GetCurrentDirectory());
 builder.Configuration.AddJsonFile("appsettings.json", false, true);
-builder.Configuration.AddJsonFile("ocelot.json", false, true);
 builder.Configuration.AddEnvironmentVariables();
-
 
 // --- 2. Настройка Аутентификации (RSA JWT) ---
 var jwtSettingsConfiguration = builder.Configuration.GetSection("JwtSettings");
@@ -74,30 +77,21 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.Configure<PolicySettings>(builder.Configuration.GetSection("PolicySettings"));
 builder.Services.Configure<ResilienceOptions>(builder.Configuration.GetSection("Gateway:Resilience"));
+
+var resilienceCheck = builder.Configuration.GetSection("Gateway:Resilience").Get<ResilienceOptions>();
+
 builder.Services.AddCors();
 builder.Services.AddControllers();
 
 // --- 5. Регистрация Шлюза ---
 var useYarp = builder.Configuration.GetValue<bool>("Gateway:UseYarp", false);
 
-if (useYarp)
-{
-    // Регистрируем именованный HttpClient с вашей логикой устойчивости (Retry, Jitter и т.д.)
-    builder.Services.AddHttpClient("YarpClient")
-        .AddKenseResilience(builder.Configuration);
-
-    builder.Services.AddReverseProxy()
+builder.Services.AddReverseProxy()
         .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"))
-        .AddTransforms<RouteRetryTransformProvider>()
-        // Привязываем YARP к нашему устойчивому HttpClient
-        .ConfigureHttpClient((context, handler) => { });
+        .AddTransforms<RouteRetryTransformProvider>(); // Наш провайдер меток
 
-}
-else
-{
-    builder.Services.AddOcelot(builder.Configuration);
-    builder.Services.AddSwaggerForOcelot(builder.Configuration);
-}
+// Регистрируем нашу фабрику (она подхватит SimpleRetryHandler)
+builder.Services.AddSingleton<IForwarderHttpClientFactory, ResilienceHttpClientFactory>();
 
 var app = builder.Build();
 
@@ -133,7 +127,6 @@ if (app.Environment.IsDevelopment())
 
 app.UseCors(b => b.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader());
 
-// Middleware (Логирование отключаем для k6)
 app.UseMiddleware<GatewayLoggingMiddleware>();
 app.UseMiddleware<YarpForwardingMiddleware>();
 
@@ -144,21 +137,8 @@ app.UseWebSockets();
 app.UseAuthentication();
 app.UseAuthorization();
 
-if (useYarp)
-{
-    app.MapReverseProxy();
-}
-else
-{
-    // Настройка таймаутов Ocelot
-    var service = app.Services.GetService(typeof(IMessageInvokerPool)) as MessageInvokerPool;
-    if (service != null)
-    {
-        service.RequestTimeoutSeconds = builder.Configuration.GetValue<int>("RequestTimeoutSeconds", 600);
-    }
-    app.UseSwaggerForOcelotUI();
-    await app.UseOcelot();
-}
+app.MapReverseProxy();
 
 app.MapControllers();
 await app.RunAsync();
+
