@@ -4,9 +4,11 @@ using Gateway.Middleware;
 using Gateway.Models;
 using Gateway.Options;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Polly;
+using StackExchange.Redis;
 using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
@@ -15,6 +17,9 @@ using Yarp.ReverseProxy.Forwarder;
 using Yarp.ReverseProxy.Model;
 using Yarp.ReverseProxy.Transforms;
 using Yarp.ReverseProxy.Transforms.Builder;
+using ZiggyCreatures.Caching.Fusion;
+using ZiggyCreatures.Caching.Fusion.Backplane;
+using ZiggyCreatures.Caching.Fusion.Backplane.StackExchangeRedis;
 
 
 var builder = WebApplication.CreateBuilder(args);
@@ -83,12 +88,76 @@ var resilienceCheck = builder.Configuration.GetSection("Gateway:Resilience").Get
 builder.Services.AddCors();
 builder.Services.AddControllers();
 
-// --- 5. Регистрация Шлюза ---
-var useYarp = builder.Configuration.GetValue<bool>("Gateway:UseYarp", false);
+// 4.1.1 Настройка двухуровневого кэша
 
+var redisConnectionString = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
+
+// Регистрация Multiplexer для общего доступа и прогрева
+var multiplexer = ConnectionMultiplexer.Connect(redisConnectionString);
+builder.Services.AddSingleton<IConnectionMultiplexer>(multiplexer);
+
+builder.Services.AddSingleton<Gateway.Options.CachePolicyEngine>();
+
+builder.Services.AddMemoryCache(options =>
+{
+    options.SizeLimit = 100 * 1024 * 1024; // 100 MB
+});
+
+// Настройка L2 (Distributed Cache) через тот же multiplexer
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    options.ConnectionMultiplexerFactory = () => Task.FromResult<IConnectionMultiplexer>(multiplexer);
+});
+
+// Настройка FusionCache Backplane
+builder.Services.AddSingleton<IFusionCacheBackplane>(sp =>
+{
+    return new RedisBackplane(new RedisBackplaneOptions
+    {
+        ConnectionMultiplexerFactory = () => Task.FromResult<IConnectionMultiplexer>(multiplexer)
+    });
+});
+
+builder.Services.AddFusionCache()
+    .WithOptions(options => {
+        options.DefaultEntryOptions = new FusionCacheEntryOptions
+        {
+            Duration = TimeSpan.FromMinutes(5),
+            IsFailSafeEnabled = true,
+            FailSafeMaxDuration = TimeSpan.FromHours(2)
+        };
+    })
+    .WithSerializer(new ZiggyCreatures.Caching.Fusion.Serialization.SystemTextJson.FusionCacheSystemTextJsonSerializer())
+    .WithRegisteredMemoryCache()
+    .WithRegisteredDistributedCache();
+// --- 5. Регистрация Шлюза ---
+/*
 builder.Services.AddReverseProxy()
         .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"))
         .AddTransforms<RouteRetryTransformProvider>(); // Наш провайдер меток
+*/
+
+builder.Services.AddReverseProxy()
+    .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"))
+    .AddTransforms(context =>
+    {
+        // Добавляем проверку на null для Route и Metadata
+        if (context.Route?.Metadata != null)
+        {
+            // 1. Пробрасываем флаг включения из Metadata в заголовок
+            if (context.Route.Metadata.TryGetValue("RetryEnabled", out var enabled))
+            {
+                context.AddRequestHeader("X-Internal-Retry-Enabled", enabled);
+            }
+
+            // 2. Пробрасываем количество попыток из Metadata в заголовок
+            if (context.Route.Metadata.TryGetValue("RetryCount", out var count))
+            {
+                context.AddRequestHeader("X-Internal-Retry-Count", count);
+            }
+        }
+    })
+    .AddTransforms<RouteRetryTransformProvider>();
 
 // Регистрируем нашу фабрику (она подхватит SimpleRetryHandler)
 builder.Services.AddSingleton<IForwarderHttpClientFactory, ResilienceHttpClientFactory>();
@@ -126,19 +195,41 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors(b => b.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader());
-
-app.UseMiddleware<GatewayLoggingMiddleware>();
-app.UseMiddleware<YarpForwardingMiddleware>();
-
-app.UseHttpsRedirection();
-app.UseWebSockets();
+app.UseRouting();
 
 // Auth строго перед проксированием
 app.UseAuthentication();
 app.UseAuthorization();
 
+app.UseMiddleware<GatewayLoggingMiddleware>();
+app.UseMiddleware<FusionCacheMiddleware>();
+app.UseMiddleware<YarpForwardingMiddleware>();
+
+app.UseHttpsRedirection();
+app.UseWebSockets();
+
 app.MapReverseProxy();
 
 app.MapControllers();
+
+try
+{
+    Console.WriteLine("[WARMUP] Начинаю прогрев систем...");
+
+    // Прогрев Redis
+    var db = multiplexer.GetDatabase();
+    await db.PingAsync();
+    Console.WriteLine("[WARMUP] Redis подключен и прогрет.");
+
+    // Прогрев Сериализатора
+    var serializer = new ZiggyCreatures.Caching.Fusion.Serialization.SystemTextJson.FusionCacheSystemTextJsonSerializer();
+    serializer.Serialize(new Gateway.Middleware.CachedResponse());
+    Console.WriteLine("[WARMUP] Сериализатор прогрет.");
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[WARMUP ERROR] Ошибка при прогреве: {ex.Message}");
+}
+
 await app.RunAsync();
 
