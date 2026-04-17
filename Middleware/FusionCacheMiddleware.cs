@@ -35,7 +35,7 @@ namespace Gateway.Middleware
                 return;
             }
 
-            Console.WriteLine($"[DEBUG] Кэш проверяет путь: {request.Path}");
+            //Console.WriteLine($"[DEBUG] Кэш проверяет путь: {request.Path}");
 
             var (isCacheable, ttl) = _engine.GetPolicy(context);
             if (!isCacheable)
@@ -50,12 +50,12 @@ namespace Gateway.Middleware
             if (cachedResponse != null)
             {
                 context.Response.Headers.TryAdd("X-Cache-Status", "HIT-Gateway");
-                Console.WriteLine($"[CACHE] HIT: {cacheKey}");
+                //Console.WriteLine($"[CACHE] HIT: {cacheKey}");
                 await ApplyCachedResponse(context.Response, cachedResponse);
                 return;
             }
 
-            Console.WriteLine($"[CACHE] MISS: {cacheKey}. Fetching from backend...");
+            //Console.WriteLine($"[CACHE] MISS: {cacheKey}. Fetching from backend...");
 
             var originalBody = context.Response.Body;
             using var ms = new MemoryStream();
@@ -87,7 +87,7 @@ namespace Gateway.Middleware
                     try
                     {
                         await _cache.SetAsync(cacheKey, toCache, opt => opt.SetDuration(ttl).SetSize(body.Length));
-                        Console.WriteLine($"[CACHE] Background Save OK: {cacheKey}");
+                        //Console.WriteLine($"[CACHE] Background Save OK: {cacheKey}");
                     }
                     catch (Exception ex)
                     {

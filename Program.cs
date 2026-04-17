@@ -55,9 +55,9 @@ if (jwtSettings?.AccessTokenSettings?.PublicKey != null)
         {
             ValidateIssuerSigningKey = true,
             IssuerSigningKey = key,
-            ValidateIssuer = false, // Как в вашем примере
+            ValidateIssuer = false, 
             ValidIssuer = jwtSettings.AccessTokenSettings.Issuer,
-            ValidateAudience = false, // Как в вашем примере
+            ValidateAudience = false, 
             ValidAudience = jwtSettings.AccessTokenSettings.Audience,
             ValidateLifetime = true
         };
@@ -130,13 +130,8 @@ builder.Services.AddFusionCache()
     .WithSerializer(new ZiggyCreatures.Caching.Fusion.Serialization.SystemTextJson.FusionCacheSystemTextJsonSerializer())
     .WithRegisteredMemoryCache()
     .WithRegisteredDistributedCache();
-// --- 5. Регистрация Шлюза ---
-/*
-builder.Services.AddReverseProxy()
-        .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"))
-        .AddTransforms<RouteRetryTransformProvider>(); // Наш провайдер меток
-*/
 
+// --- 5. Регистрация Шлюза ---
 builder.Services.AddReverseProxy()
     .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"))
     .AddTransforms(context =>
@@ -169,7 +164,6 @@ var app = builder.Build();
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
-    //app.UseSwaggerUI();
     app.UseSwaggerUI(options =>
     {
         // Указываем путь ЧЕРЕЗ наш шлюз (YARP перенаправит это на нужный сервис)
@@ -214,17 +208,17 @@ app.MapControllers();
 
 try
 {
-    Console.WriteLine("[WARMUP] Начинаю прогрев систем...");
+    //Console.WriteLine("[WARMUP] Начинаю прогрев систем...");
 
     // Прогрев Redis
     var db = multiplexer.GetDatabase();
     await db.PingAsync();
-    Console.WriteLine("[WARMUP] Redis подключен и прогрет.");
+    //Console.WriteLine("[WARMUP] Redis подключен и прогрет.");
 
     // Прогрев Сериализатора
     var serializer = new ZiggyCreatures.Caching.Fusion.Serialization.SystemTextJson.FusionCacheSystemTextJsonSerializer();
     serializer.Serialize(new Gateway.Middleware.CachedResponse());
-    Console.WriteLine("[WARMUP] Сериализатор прогрет.");
+    //Console.WriteLine("[WARMUP] Сериализатор прогрет.");
 }
 catch (Exception ex)
 {

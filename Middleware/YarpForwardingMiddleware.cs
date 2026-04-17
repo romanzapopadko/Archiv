@@ -30,12 +30,12 @@ namespace Gateway.Middleware
 
             stopwatch.Stop();
 
-            // ПУНКТ 2.1.7: Перехват IProxyErrorFeature
+            // Перехват IProxyErrorFeature
             var errorFeature = context.GetForwarderErrorFeature();
 
             if (errorFeature != null)
             {
-                // ПУНКТ 2.1.7: Логирование (Error, RouteId, ElapsedMs)
+                // Логирование (Error, RouteId, ElapsedMs)
                 var routeId = context.GetRouteModel()?.Config.RouteId ?? "unknown";
 
                 _logger.LogError(
@@ -45,7 +45,7 @@ namespace Gateway.Middleware
                     stopwatch.ElapsedMilliseconds,
                     errorFeature.Exception?.Message);
 
-                // ПУНКТ 2.1.7: Возвращать 502 без повторов
+                // Возвращать 502 без повторов
                 if (!context.Response.HasStarted)
                 {
                     context.Response.StatusCode = StatusCodes.Status502BadGateway;
